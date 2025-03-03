@@ -1,0 +1,5 @@
+paho-mqtt
+pydantic==1.10.14
+pymongo==4.3.3
+python-dotenv
+pyspark==3.5.0

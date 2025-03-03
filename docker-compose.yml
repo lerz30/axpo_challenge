@@ -1,0 +1,103 @@
+version: '3.7'
+
+services:
+  mqtt_broker:
+    image: eclipse-mosquitto:2
+    volumes:
+      - ./config/:/mosquitto/config/:ro
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+
+  iot_data_generator:
+    build: .
+    environment:
+      - MQTT_HOST=mqtt_broker
+      - MQTT_PORT=1883
+      - MQTT_TOPIC=sensors
+      - INTERVAL_MS=1000
+      - LOGGING_LEVEL=20
+    depends_on:
+      - mqtt_broker
+    command: ["python", "iot_data_generator/run.py"]
+
+  # Defining the data consumer: It is built from the Dockerfile and somme variables related
+  # to the broker are defined as well
+  iot_data_consumer:
+    build: .
+    environment:
+      - MQTT_HOST=mqtt_broker
+      - MQTT_PORT=1883
+      - MQTT_TOPIC=sensors
+    depends_on:
+      - mqtt_broker
+    command: ["python", "iot_data_consumer/run.py"]
+
+  # Defining the MongoDB: meant to stored raw data from IoT devices, it is defined by
+  # using la latest image available, as well as defining ports and some environment variables
+  mongo:
+    image: mongo:latest
+    container_name: data-engineer-challenge-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: rootpassword
+      MONGO_INITDB_DATABASE: sensors_db
+    depends_on:
+      - mqtt_broker
+
+  # Defining Postgres: meant to be used as a data warehouse, it is defined by using the latest available image,
+  # as well as defining ports and some environment variables
+  postgres:
+    image: postgres:latest
+    container_name: data-engineer-challenge-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: rootpassword
+      POSTGRES_DB: data_warehouse
+    depends_on:
+      - mqtt_broker
+
+  # Defining spark master & client. These services are meant to read the data from MongoDB,
+  # apply some logic, and write to the data warehouse
+  spark_master:
+    build: .
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark_master
+      - SPARK_MASTER_PORT=7077
+    ports:
+      - "7077:7077"
+      - "8080:8080"
+    command: [
+      "/opt/spark/bin/spark-class",
+      "org.apache.spark.deploy.master.Master",
+      "--host", "spark_master",
+      "--port", "7077",
+      "--webui-port", "8080"
+    ]
+
+  spark_process:
+    build: .
+    environment:
+      - SPARK_MODE=client
+      - SPARK_MASTER=spark://spark_master:7077
+      - SPARK_DRIVER_MEMORY=2g
+      - SPARK_EXECUTOR_MEMORY=2g
+    depends_on:
+      - mongo
+      - postgres
+      - spark_master
+    command: [
+      "spark-submit",
+      "--packages", "org.mongodb.spark:mongo-spark-connector_2.12:10.4.1",
+      "--conf", "spark.mongodb.input.uri=mongodb://root:rootpassword@mongo:27017/sensors_db.sensors_data",
+      "--conf", "spark.mongodb.output.uri=mongodb://root:rootpassword@mongo:27017/sensors_db.sensors_data",
+      "spark/run.py"
+    ]
+
+volumes:
+  data: ~
